@@ -1,0 +1,28 @@
+name: Poll air quality data
+
+on:
+  schedule:
+      - cron: '0 * * * *'  # every hour — adjust later
+        workflow_dispatch:      # allow manual trigger
+
+        jobs:
+          fetch:
+              runs-on: ubuntu-latest
+                  steps:
+                        - uses: actions/checkout@v4
+
+                              - name: Set up Python
+                                      uses: actions/setup-python@v5
+                                              with:
+                                                        python-version: '3.11'
+
+                                                              - name: Install dependencies
+                                                                      run: pip install -r requirements.txt
+
+                                                                            - name: Run fetch script
+                                                                                    env:
+                                                                                              IQAIR_API_KEY: ${{ secrets.IQAIR_API_KEY }}
+                                                                                                        SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+                                                                                                                  PUSHGATEWAY_URL: ${{ secrets.PUSHGATEWAY_URL }}
+                                                                                                                          run: python scripts/fetch.py
+                                                                                                                          
