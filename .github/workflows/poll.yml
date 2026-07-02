@@ -2,7 +2,7 @@ name: Poll air quality data
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "0 0 * * 0"  # weekly keepalive — real 30-min trigger is cron-job.org
   workflow_dispatch:
 
 jobs:
