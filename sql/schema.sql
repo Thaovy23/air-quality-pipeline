@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS device_readings (
     humidity_pct real,                              -- hm — INDOOR humidity (%)
     pressure_hpa real,                              -- pr/100 — pressure (hPa)
 
+    aqius        integer,                           -- overall US AQI (may differ from pm25_aqius when CO2/PM10 is dominant)
+    aqicn        integer,                           -- overall China AQI
+    mainus       text,                              -- dominant pollutant US, e.g. "pm25", "co2"
+    maincn       text,                              -- dominant pollutant China
+
     raw          jsonb,                             -- original payload for this row
     inserted_at  timestamptz NOT NULL DEFAULT now(),
 
@@ -78,6 +83,8 @@ CREATE TABLE IF NOT EXISTS station_readings (
     condition      text,                            -- e.g. "Broken clouds"
     icon           text,                            -- e.g. "04d"
     heat_index     real,                            -- feels-like temperature (°C)
+    mainus         text,                            -- dominant pollutant US
+    maincn         text,                            -- dominant pollutant China
 
     raw            jsonb,
     inserted_at    timestamptz NOT NULL DEFAULT now(),

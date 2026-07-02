@@ -13,13 +13,17 @@ DEVICE_COLS = [
     "resolution", "ts", "co2", "pm1_conc",
     "pm25_conc", "pm25_aqius", "pm25_aqicn",
     "pm10_conc", "pm10_aqius", "pm10_aqicn",
-    "temp_c", "humidity_pct", "pressure_hpa", "raw",
+    "temp_c", "humidity_pct", "pressure_hpa",
+    "aqius", "aqicn", "mainus", "maincn",
+    "raw",
 ]
 
 STATION_COLS = [
     "resolution", "ts", "pm25_conc", "pm25_aqius", "pm25_aqicn",
     "aqius", "aqicn", "temp_out_c", "humidity_out", "pressure_hpa",
-    "wind_speed", "wind_dir", "condition", "icon", "heat_index", "raw",
+    "wind_speed", "wind_dir", "condition", "icon", "heat_index",
+    "mainus", "maincn",
+    "raw",
 ]
 
 
@@ -62,6 +66,10 @@ def device_row(row, resolution, Json):
         row.get("tp"),
         row.get("hm"),
         _pa_to_hpa(row.get("pr")),
+        row.get("aqius"),
+        row.get("aqicn"),
+        row.get("mainus"),
+        row.get("maincn"),
         Json(row),
     )
 
@@ -87,5 +95,7 @@ def station_row(row, resolution, Json):
         row.get("condition"),
         row.get("icon"),
         row.get("heatIndex"),
+        row.get("mainus"),
+        row.get("maincn"),
         Json(row),
     )
