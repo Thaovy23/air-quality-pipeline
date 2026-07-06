@@ -100,8 +100,9 @@ COMMENT ON COLUMN station_readings.temp_out_c IS 'OUTDOOR temperature (distinct 
 
 -- ---------------------------------------------------------------------
 -- 3) Convenience view — compare INDOOR vs OUTDOOR metrics by hour
---    Joined on hour bucket (NOT on ts directly) because root data can be
---    minute-level while validated is hourly only.
+--    Both sides are resolution='hourly' rows pulled directly from each
+--    endpoint's vendor-computed historical.hourly, so their ts values are
+--    already round-hour — join on ts directly, no truncation needed.
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_indoor_outdoor_hourly AS
 SELECT
@@ -118,7 +119,7 @@ SELECT
 FROM device_readings  d
 LEFT JOIN station_readings s
        ON s.resolution = 'hourly'
-      AND s.ts = date_trunc('hour', d.ts)
+      AND s.ts = d.ts
 WHERE d.resolution = 'hourly';
 
 
