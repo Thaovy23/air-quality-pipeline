@@ -1,4 +1,10 @@
-"""fetch.py — Fetch a current snapshot every 30 min from both Device API v2 endpoints and write to Postgres."""
+"""fetch.py — Poll both Device API v2 endpoints every 30 min and write to Postgres.
+
+The device samples roughly once a minute; root.historical.instant retains ~1h of that
+minute-level history. Since our poll interval (30 min) is shorter than that retention
+window, pulling the whole instant array each run (not just 'current') and upserting it
+means no minute-level reading is ever lost, even if a poll is briefly delayed.
+"""
 import os
 import sys
 
@@ -45,14 +51,32 @@ def fetch(sess, url):
     return r.json()
 
 
-def upsert_one(cur, table, cols, row):
+def build_device_instant_rows(root):
+    """root.historical.instant (~1h of minute-level readings) + current -> deduplicated
+    tuple list, keyed by ts. current overwrites a duplicate historical entry."""
+    by_key = {}
+    hist = root.get("historical", {}) or {}
+    for r in hist.get("instant", []) or []:
+        if r.get("ts"):
+            by_key[r["ts"]] = nz.device_row(r, "instant", Json)
+    cur = root.get("current")
+    if cur and cur.get("ts"):
+        by_key[cur["ts"]] = nz.device_row(cur, "instant", Json)
+    return list(by_key.values())
+
+
+def upsert(cur, table, cols, rows):
+    """Batch upsert with ON CONFLICT (resolution, ts) DO UPDATE."""
+    if not rows:
+        return 0
     updatable = [c for c in cols if c not in ("resolution", "ts")]
     set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in updatable)
     sql = (
         f"INSERT INTO {table} ({', '.join(cols)}) VALUES %s "
         f"ON CONFLICT (resolution, ts) DO UPDATE SET {set_clause}"
     )
-    execute_values(cur, sql, [row])
+    execute_values(cur, sql, rows, page_size=500)
+    return len(rows)
 
 
 def ping(url):
@@ -85,22 +109,22 @@ def main():
 
     cur_station = validated.get("current")
 
-    device_row = nz.device_row(cur_device, "instant", Json)
-    station_row = (
-        nz.station_row(cur_station, "instant", Json)
+    device_rows = build_device_instant_rows(root)
+    station_rows = (
+        [nz.station_row(cur_station, "instant", Json)]
         if (cur_station and cur_station.get("ts"))
-        else None
+        else []
     )
 
     with psycopg2.connect(SUPABASE_DB_URL) as conn:
         with conn.cursor() as cur:
-            upsert_one(cur, "device_readings", nz.DEVICE_COLS, device_row)
-            if station_row:
-                upsert_one(cur, "station_readings", nz.STATION_COLS, station_row)
+            n1 = upsert(cur, "device_readings", nz.DEVICE_COLS, device_rows)
+            n2 = upsert(cur, "station_readings", nz.STATION_COLS, station_rows)
         conn.commit()
 
     ts = cur_device.get("ts", "?")
-    print(f"OK ts={ts} | co2={cur_device.get('co2')} | pm25={nz._conc(cur_device.get('pm25'))}")
+    print(f"OK ts={ts} | co2={cur_device.get('co2')} | pm25={nz._conc(cur_device.get('pm25'))} "
+          f"| device_rows={n1} station_rows={n2}")
     ping(HEALTHCHECKS_URL)
 
 
