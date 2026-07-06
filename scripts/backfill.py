@@ -55,33 +55,6 @@ def fetch(sess, url):
     return r.json()
 
 
-def build_device_rows(root):
-    """All history resolutions + current from root endpoint -> deduplicated tuple list.
-    Uses a dict keyed by (resolution, ts) so current overwrites a duplicate instant entry."""
-    by_key = {}
-    hist = root.get("historical", {}) or {}
-    for resolution in ("instant", "hourly", "daily", "monthly"):
-        for r in hist.get(resolution, []) or []:
-            by_key[(resolution, r.get("ts"))] = nz.device_row(r, resolution, Json)
-    cur = root.get("current")
-    if cur and cur.get("ts"):
-        # current may share ts with the last instant history entry — overwrite is correct
-        by_key[("instant", cur.get("ts"))] = nz.device_row(cur, "instant", Json)
-    return list(by_key.values())
-
-
-def build_station_rows(validated):
-    """current (instant) + hourly history from validated endpoint -> deduplicated tuple list."""
-    by_key = {}
-    hist = validated.get("historical", {}) or {}
-    for r in hist.get("hourly", []) or []:
-        by_key[("hourly", r.get("ts"))] = nz.station_row(r, "hourly", Json)
-    cur = validated.get("current")
-    if cur and cur.get("ts"):
-        by_key[("instant", cur.get("ts"))] = nz.station_row(cur, "instant", Json)
-    return list(by_key.values())
-
-
 def upsert(cur, table, cols, rows):
     """Batch upsert with ON CONFLICT (resolution, ts) DO UPDATE."""
     if not rows:
@@ -105,8 +78,8 @@ def main():
     root = fetch(sess, ROOT_URL)
     validated = fetch(sess, VALIDATED_URL)
 
-    device_rows = build_device_rows(root)
-    station_rows = build_station_rows(validated)
+    device_rows = nz.build_device_rows(root, Json)
+    station_rows = nz.build_station_rows(validated, Json)
     print(f"  device_readings : {len(device_rows)} rows")
     print(f"  station_readings: {len(station_rows)} rows")
 

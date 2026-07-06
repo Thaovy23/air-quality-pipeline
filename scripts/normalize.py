@@ -99,3 +99,38 @@ def station_row(row, resolution, Json):
         row.get("maincn"),
         Json(row),
     )
+
+
+def build_device_rows(root, Json):
+    """All history resolutions + current from the ROOT endpoint -> deduplicated tuple list.
+    Keyed by (resolution, ts) so current overwrites a duplicate instant entry.
+
+    Each resolution's retention window on the API (instant ~1h, hourly ~48h, daily ~30d,
+    monthly ~12mo) is wider than the 30-min poll interval, so upserting the whole set every
+    run accumulates a gap-free history at every granularity. The most recent daily/monthly
+    row is a running partial average; ON CONFLICT DO UPDATE overwrites it until it settles."""
+    by_key = {}
+    hist = root.get("historical", {}) or {}
+    for resolution in ("instant", "hourly", "daily", "monthly"):
+        for r in hist.get(resolution, []) or []:
+            if r.get("ts"):
+                by_key[(resolution, r["ts"])] = device_row(r, resolution, Json)
+    cur = root.get("current")
+    if cur and cur.get("ts"):
+        by_key[("instant", cur["ts"])] = device_row(cur, "instant", Json)
+    return list(by_key.values())
+
+
+def build_station_rows(validated, Json):
+    """current (instant) + hourly history from the VALIDATED endpoint -> deduplicated tuple list.
+    Keyed by (resolution, ts). Pulling hourly each run (not just current) keeps outdoor
+    history gap-free the same way as the device side."""
+    by_key = {}
+    hist = validated.get("historical", {}) or {}
+    for r in hist.get("hourly", []) or []:
+        if r.get("ts"):
+            by_key[("hourly", r["ts"])] = station_row(r, "hourly", Json)
+    cur = validated.get("current")
+    if cur and cur.get("ts"):
+        by_key[("instant", cur["ts"])] = station_row(cur, "instant", Json)
+    return list(by_key.values())

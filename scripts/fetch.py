@@ -1,9 +1,11 @@
 """fetch.py — Poll both Device API v2 endpoints every 30 min and write to Postgres.
 
-The device samples roughly once a minute; root.historical.instant retains ~1h of that
-minute-level history. Since our poll interval (30 min) is shorter than that retention
-window, pulling the whole instant array each run (not just 'current') and upserting it
-means no minute-level reading is ever lost, even if a poll is briefly delayed.
+Each run pulls the full historical set at all four resolutions (instant/hourly/daily/
+monthly) plus current, not just the latest snapshot. Every resolution's API retention
+window is wider than the 30-min poll interval, so upserting the whole set each run keeps
+a gap-free history at every granularity and avoids the 'frozen' hourly/daily/monthly that
+resulted from only writing instant. Uses the shared builders in normalize.py, the same
+ones backfill.py uses — the two scripts now differ only in intent (recurring vs one-shot).
 """
 import os
 import sys
@@ -51,20 +53,6 @@ def fetch(sess, url):
     return r.json()
 
 
-def build_device_instant_rows(root):
-    """root.historical.instant (~1h of minute-level readings) + current -> deduplicated
-    tuple list, keyed by ts. current overwrites a duplicate historical entry."""
-    by_key = {}
-    hist = root.get("historical", {}) or {}
-    for r in hist.get("instant", []) or []:
-        if r.get("ts"):
-            by_key[r["ts"]] = nz.device_row(r, "instant", Json)
-    cur = root.get("current")
-    if cur and cur.get("ts"):
-        by_key[cur["ts"]] = nz.device_row(cur, "instant", Json)
-    return list(by_key.values())
-
-
 def upsert(cur, table, cols, rows):
     """Batch upsert with ON CONFLICT (resolution, ts) DO UPDATE."""
     if not rows:
@@ -102,19 +90,14 @@ def main():
         print(f"API fetch error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    cur_device = root.get("current")
-    if not (cur_device and cur_device.get("ts")):
-        print("Root endpoint returned no current.ts.", file=sys.stderr)
+    device_rows = nz.build_device_rows(root, Json)
+    station_rows = nz.build_station_rows(validated, Json)
+
+    if not device_rows:
+        # No history and no current from root — nothing worth writing; skip the ping so the
+        # dead-man's switch fires if this keeps happening.
+        print("Root endpoint returned no usable rows.", file=sys.stderr)
         sys.exit(1)
-
-    cur_station = validated.get("current")
-
-    device_rows = build_device_instant_rows(root)
-    station_rows = (
-        [nz.station_row(cur_station, "instant", Json)]
-        if (cur_station and cur_station.get("ts"))
-        else []
-    )
 
     with psycopg2.connect(SUPABASE_DB_URL) as conn:
         with conn.cursor() as cur:
@@ -122,6 +105,7 @@ def main():
             n2 = upsert(cur, "station_readings", nz.STATION_COLS, station_rows)
         conn.commit()
 
+    cur_device = root.get("current") or {}
     ts = cur_device.get("ts", "?")
     print(f"OK ts={ts} | co2={cur_device.get('co2')} | pm25={nz._conc(cur_device.get('pm25'))} "
           f"| device_rows={n1} station_rows={n2}")
