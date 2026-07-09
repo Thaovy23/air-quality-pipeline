@@ -134,3 +134,70 @@ def build_station_rows(validated, Json):
     if cur and cur.get("ts"):
         by_key[("instant", cur["ts"])] = station_row(cur, "instant", Json)
     return list(by_key.values())
+
+
+# ---------------------------------------------------------------------
+# Cross-field data-quality checks (flag, do NOT block/drop).
+# Each invariant below was verified to hold on 100% of existing rows, so a
+# violation is a strong signal of a sensor or parse fault — a canary, not noise.
+# Checks only fire when all needed fields are present (can't validate absent data).
+# Pure functions on the raw API dict -> unit-testable.
+# ---------------------------------------------------------------------
+def check_device_invariants(row):
+    """Cross-field violations for one ROOT (device) row. Returns list of reason strings."""
+    out = []
+    pm1, pm25, pm10 = _conc(row.get("pm1")), _conc(row.get("pm25")), _conc(row.get("pm10"))
+    if None not in (pm1, pm25, pm10) and not (pm1 <= pm25 <= pm10):
+        out.append(f"PM order violated: pm1={pm1} pm25={pm25} pm10={pm10}")
+
+    aqius = row.get("aqius")
+    pm25_aqi = _sub(row.get("pm25"), "aqius")
+    pm10_aqi = _sub(row.get("pm10"), "aqius")
+    if None not in (aqius, pm25_aqi, pm10_aqi) and aqius != max(pm25_aqi, pm10_aqi):
+        out.append(f"overall aqius {aqius} != max(component) {max(pm25_aqi, pm10_aqi)}")
+
+    mainus = row.get("mainus")
+    main_aqi = {"pm25": pm25_aqi, "pm10": pm10_aqi}.get(mainus)
+    if mainus and aqius is not None and main_aqi is not None and main_aqi != aqius:
+        out.append(f"mainus='{mainus}' but its AQI {main_aqi} != overall aqius {aqius}")
+    return out
+
+
+def check_station_invariants(row):
+    """Cross-field violations for one VALIDATED (station) row. Returns list of reason strings."""
+    out = []
+    hi, temp = row.get("heatIndex"), row.get("temperature")
+    if None not in (hi, temp) and hi < temp:
+        out.append(f"heat_index {hi} < temperature {temp}")
+
+    aqius = row.get("aqius")
+    pm25_aqi = _sub(row.get("pm25"), "aqius")
+    if None not in (aqius, pm25_aqi) and aqius != pm25_aqi:
+        out.append(f"station overall aqius {aqius} != pm25 aqi {pm25_aqi}")
+    return out
+
+
+def _iter_payload_rows(payload, resolutions):
+    """Yield (resolution, row) for every historical row + current in an API payload."""
+    hist = payload.get("historical", {}) or {}
+    for resolution in resolutions:
+        for r in hist.get(resolution, []) or []:
+            yield resolution, r
+    cur = payload.get("current")
+    if cur and cur.get("ts"):
+        yield "instant", cur
+
+
+def scan_quality(root, validated):
+    """Scan both payloads. Returns list of (endpoint, resolution, ts, [reasons]) for rows
+    that violate any cross-field invariant."""
+    findings = []
+    for resolution, r in _iter_payload_rows(root, ("instant", "hourly", "daily", "monthly")):
+        reasons = check_device_invariants(r)
+        if reasons:
+            findings.append(("device", resolution, r.get("ts"), reasons))
+    for resolution, r in _iter_payload_rows(validated, ("hourly",)):
+        reasons = check_station_invariants(r)
+        if reasons:
+            findings.append(("station", resolution, r.get("ts"), reasons))
+    return findings

@@ -129,3 +129,39 @@ WHERE d.resolution = 'hourly';
 -- ---------------------------------------------------------------------
 -- SELECT EXTRACT(EPOCH FROM (now() - max(ts))) AS age_seconds
 -- FROM device_readings WHERE resolution = 'instant';
+
+
+-- ---------------------------------------------------------------------
+-- 5) Cross-field data-quality anomaly views
+--    Each invariant below verified to hold on 100% of existing rows, so any
+--    row surfacing here signals a real sensor/parse fault (a canary). fetch.py
+--    flags these at ingestion but never drops them — the offending row is kept
+--    as evidence. Grafana can COUNT/alert on these views (default: expect 0 rows).
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_device_anomalies AS
+SELECT resolution, ts, pm1_conc, pm25_conc, pm10_conc,
+       aqius, pm25_aqius, pm10_aqius, mainus,
+       CASE
+         WHEN pm1_conc > pm25_conc OR pm25_conc > pm10_conc
+              THEN 'PM order violated (expect PM1 <= PM2.5 <= PM10)'
+         WHEN aqius <> GREATEST(pm25_aqius, pm10_aqius)
+              THEN 'overall AQI <> max(component AQI)'
+         ELSE 'main pollutant AQI mismatch'
+       END AS reason
+FROM device_readings
+WHERE pm1_conc > pm25_conc
+   OR pm25_conc > pm10_conc
+   OR (aqius IS NOT NULL AND pm25_aqius IS NOT NULL AND pm10_aqius IS NOT NULL
+       AND aqius <> GREATEST(pm25_aqius, pm10_aqius))
+   OR (mainus = 'pm25' AND aqius IS NOT NULL AND pm25_aqius IS NOT NULL AND pm25_aqius <> aqius)
+   OR (mainus = 'pm10' AND aqius IS NOT NULL AND pm10_aqius IS NOT NULL AND pm10_aqius <> aqius);
+
+CREATE OR REPLACE VIEW v_station_anomalies AS
+SELECT resolution, ts, temp_out_c, heat_index, aqius, pm25_aqius,
+       CASE
+         WHEN heat_index < temp_out_c THEN 'heat_index < temperature'
+         ELSE 'overall AQI <> PM2.5 AQI'
+       END AS reason
+FROM station_readings
+WHERE (heat_index IS NOT NULL AND temp_out_c IS NOT NULL AND heat_index < temp_out_c)
+   OR (aqius IS NOT NULL AND pm25_aqius IS NOT NULL AND aqius <> pm25_aqius);

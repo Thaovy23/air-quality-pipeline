@@ -99,6 +99,14 @@ def main():
         print("Root endpoint returned no usable rows.", file=sys.stderr)
         sys.exit(1)
 
+    # Cross-field data-quality scan: FLAG, don't block. A violation is a data-correctness
+    # signal, not a pipeline-liveness one — so we still write every row and still ping the
+    # dead-man's switch below (the pipeline is alive and doing its job).
+    findings = nz.scan_quality(root, validated)
+    for endpoint, resolution, ts_v, reasons in findings:
+        print(f"QC WARNING [{endpoint}/{resolution} ts={ts_v}]: {'; '.join(reasons)}",
+              file=sys.stderr)
+
     with psycopg2.connect(SUPABASE_DB_URL) as conn:
         with conn.cursor() as cur:
             n1 = upsert(cur, "device_readings", nz.DEVICE_COLS, device_rows)
@@ -108,7 +116,7 @@ def main():
     cur_device = root.get("current") or {}
     ts = cur_device.get("ts", "?")
     print(f"OK ts={ts} | co2={cur_device.get('co2')} | pm25={nz._conc(cur_device.get('pm25'))} "
-          f"| device_rows={n1} station_rows={n2}")
+          f"| device_rows={n1} station_rows={n2} | qc_violations={len(findings)}")
     ping(HEALTHCHECKS_URL)
 
 
