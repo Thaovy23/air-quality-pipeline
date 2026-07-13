@@ -1,0 +1,3 @@
+# Dev/test-only deps, kept out of requirements.txt so production fetch/retention
+# runs don't install them. Install with:  pip install -r requirements-dev.txt
+pytest
