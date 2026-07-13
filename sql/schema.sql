@@ -132,39 +132,103 @@ WHERE d.resolution = 'hourly';
 
 
 -- ---------------------------------------------------------------------
--- 5) Cross-field data-quality anomaly views
---    Each invariant below verified to hold on 100% of existing rows, so any
---    row surfacing here signals a real sensor/parse fault (a canary). fetch.py
---    flags these at ingestion but never drops them — the offending row is kept
---    as evidence. Grafana can COUNT/alert on these views (default: expect 0 rows).
+-- 5) Data-quality anomaly views (long format: one row per violation)
+--    Two check_type families:
+--      cross_field — relationship between columns (verified to hold 100%)
+--      range       — a single column holding a physically impossible value.
+--                    Bounds are calibrated LOOSE from observed data to catch
+--                    garbage (negative mass, humidity>100), not normal variation.
+--    Flag, never block: offending rows are kept as evidence (see the
+--    flag-not-block principle); Grafana counts/alerts, default expects 0 rows.
+--    column_name + observed_value let a dashboard group and debug without
+--    parsing the reason text.
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_device_anomalies AS
-SELECT resolution, ts, pm1_conc, pm25_conc, pm10_conc,
-       aqius, pm25_aqius, pm10_aqius, mainus,
-       CASE
-         WHEN pm1_conc > pm25_conc OR pm25_conc > pm10_conc
-              THEN 'PM order violated (expect PM1 <= PM2.5 <= PM10)'
-         WHEN aqius <> GREATEST(pm25_aqius, pm10_aqius)
-              THEN 'overall AQI <> max(component AQI)'
-         ELSE 'main pollutant AQI mismatch'
-       END AS reason
+-- cross_field
+SELECT resolution, ts, 'cross_field' AS check_type, 'pm_order' AS column_name,
+       format('pm1=%s pm25=%s pm10=%s', pm1_conc, pm25_conc, pm10_conc) AS observed_value,
+       'expected PM1 <= PM2.5 <= PM10' AS reason
+FROM device_readings WHERE pm1_conc > pm25_conc OR pm25_conc > pm10_conc
+UNION ALL
+SELECT resolution, ts, 'cross_field', 'aqi_consistency',
+       format('aqius=%s pm25_aqi=%s pm10_aqi=%s', aqius, pm25_aqius, pm10_aqius),
+       'overall AQI <> max(component AQI)'
 FROM device_readings
-WHERE pm1_conc > pm25_conc
-   OR pm25_conc > pm10_conc
-   OR (aqius IS NOT NULL AND pm25_aqius IS NOT NULL AND pm10_aqius IS NOT NULL
-       AND aqius <> GREATEST(pm25_aqius, pm10_aqius))
-   OR (mainus = 'pm25' AND aqius IS NOT NULL AND pm25_aqius IS NOT NULL AND pm25_aqius <> aqius)
-   OR (mainus = 'pm10' AND aqius IS NOT NULL AND pm10_aqius IS NOT NULL AND pm10_aqius <> aqius);
+WHERE aqius IS NOT NULL AND pm25_aqius IS NOT NULL AND pm10_aqius IS NOT NULL
+  AND aqius <> GREATEST(pm25_aqius, pm10_aqius)
+UNION ALL
+SELECT resolution, ts, 'cross_field', 'main_pollutant',
+       format('mainus=%s aqius=%s pm25_aqi=%s pm10_aqi=%s', mainus, aqius, pm25_aqius, pm10_aqius),
+       'main pollutant AQI mismatch'
+FROM device_readings
+WHERE (mainus = 'pm25' AND aqius IS NOT NULL AND pm25_aqius IS NOT NULL AND pm25_aqius <> aqius)
+   OR (mainus = 'pm10' AND aqius IS NOT NULL AND pm10_aqius IS NOT NULL AND pm10_aqius <> aqius)
+-- range (garbage bounds; observed: co2 393-489, pm 1-179, temp 24.8-35.6, hum 48-91, pr 998-1008)
+UNION ALL SELECT resolution, ts, 'range', 'co2',          co2::text,          'co2 outside (0, 10000]'         FROM device_readings WHERE co2 <= 0 OR co2 > 10000
+UNION ALL SELECT resolution, ts, 'range', 'pm1_conc',     pm1_conc::text,     'pm1_conc < 0'                   FROM device_readings WHERE pm1_conc < 0
+UNION ALL SELECT resolution, ts, 'range', 'pm25_conc',    pm25_conc::text,    'pm25_conc < 0'                  FROM device_readings WHERE pm25_conc < 0
+UNION ALL SELECT resolution, ts, 'range', 'pm10_conc',    pm10_conc::text,    'pm10_conc < 0'                  FROM device_readings WHERE pm10_conc < 0
+UNION ALL SELECT resolution, ts, 'range', 'temp_c',       temp_c::text,       'temp_c outside [-50, 70]'       FROM device_readings WHERE temp_c < -50 OR temp_c > 70
+UNION ALL SELECT resolution, ts, 'range', 'humidity_pct', humidity_pct::text, 'humidity_pct outside [0, 100]'  FROM device_readings WHERE humidity_pct < 0 OR humidity_pct > 100
+UNION ALL SELECT resolution, ts, 'range', 'pressure_hpa', pressure_hpa::text, 'pressure_hpa outside [800,1100]' FROM device_readings WHERE pressure_hpa < 800 OR pressure_hpa > 1100
+UNION ALL SELECT resolution, ts, 'range', 'aqius',        aqius::text,        'aqius outside [0, 500]'          FROM device_readings WHERE aqius < 0 OR aqius > 500;
 
 CREATE OR REPLACE VIEW v_station_anomalies AS
-SELECT resolution, ts, temp_out_c, heat_index, aqius, pm25_aqius,
-       CASE
-         WHEN heat_index < temp_out_c THEN 'heat_index < temperature'
-         ELSE 'overall AQI <> PM2.5 AQI'
-       END AS reason
-FROM station_readings
-WHERE (heat_index IS NOT NULL AND temp_out_c IS NOT NULL AND heat_index < temp_out_c)
-   OR (aqius IS NOT NULL AND pm25_aqius IS NOT NULL AND aqius <> pm25_aqius);
+-- cross_field
+SELECT resolution, ts, 'cross_field' AS check_type, 'heat_index_vs_temp' AS column_name,
+       format('heat_index=%s temp=%s', heat_index, temp_out_c) AS observed_value,
+       'heat_index < temperature' AS reason
+FROM station_readings WHERE heat_index IS NOT NULL AND temp_out_c IS NOT NULL AND heat_index < temp_out_c
+UNION ALL
+SELECT resolution, ts, 'cross_field', 'aqi_source',
+       format('aqius=%s pm25_aqi=%s', aqius, pm25_aqius), 'overall AQI <> PM2.5 AQI'
+FROM station_readings WHERE aqius IS NOT NULL AND pm25_aqius IS NOT NULL AND aqius <> pm25_aqius
+-- range (observed: pm25 2-71, temp 24-35, hum 45-97, pr 1003-1013, wind 0.56-8.06, dir 2-360)
+UNION ALL SELECT resolution, ts, 'range', 'pm25_conc',    pm25_conc::text,    'pm25_conc < 0'                  FROM station_readings WHERE pm25_conc < 0
+UNION ALL SELECT resolution, ts, 'range', 'aqius',        aqius::text,        'aqius outside [0, 500]'          FROM station_readings WHERE aqius < 0 OR aqius > 500
+UNION ALL SELECT resolution, ts, 'range', 'temp_out_c',   temp_out_c::text,   'temp_out_c outside [-50, 70]'    FROM station_readings WHERE temp_out_c < -50 OR temp_out_c > 70
+UNION ALL SELECT resolution, ts, 'range', 'humidity_out', humidity_out::text, 'humidity_out outside [0, 100]'   FROM station_readings WHERE humidity_out < 0 OR humidity_out > 100
+UNION ALL SELECT resolution, ts, 'range', 'pressure_hpa', pressure_hpa::text, 'pressure_hpa outside [800,1100]' FROM station_readings WHERE pressure_hpa < 800 OR pressure_hpa > 1100
+UNION ALL SELECT resolution, ts, 'range', 'wind_speed',   wind_speed::text,   'wind_speed < 0'                 FROM station_readings WHERE wind_speed < 0
+UNION ALL SELECT resolution, ts, 'range', 'wind_dir',     wind_dir::text,     'wind_dir outside [0, 360]'       FROM station_readings WHERE wind_dir < 0 OR wind_dir > 360
+UNION ALL SELECT resolution, ts, 'range', 'heat_index',   heat_index::text,   'heat_index outside [-50, 80]'    FROM station_readings WHERE heat_index < -50 OR heat_index > 80;
+
+
+-- ---------------------------------------------------------------------
+-- 5b) v_column_health — per-column NULL rate over the last 24h (instant only).
+--    Schema-drift canary: a key column silently going all-NULL means the API
+--    changed. Windowed to 24h and to resolution='instant' on purpose — an
+--    all-time view would false-alarm (aqius is ~98% NULL historically because
+--    it was added late), and station weather columns are NULL by design on
+--    hourly rows. The LATERAL VALUES unpivot keeps one row per (column) tidy.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_column_health AS
+SELECT 'device_readings' AS table_name, 'instant' AS resolution, kv.column_name,
+       count(*) AS rows_recent,
+       count(*) FILTER (WHERE kv.val IS NULL) AS null_count,
+       round(100.0 * count(*) FILTER (WHERE kv.val IS NULL) / NULLIF(count(*), 0), 1) AS null_pct
+FROM device_readings d
+CROSS JOIN LATERAL (VALUES
+    ('co2', d.co2::double precision), ('pm1_conc', d.pm1_conc::double precision),
+    ('pm25_conc', d.pm25_conc::double precision), ('pm10_conc', d.pm10_conc::double precision),
+    ('temp_c', d.temp_c::double precision), ('humidity_pct', d.humidity_pct::double precision),
+    ('pressure_hpa', d.pressure_hpa::double precision)
+) AS kv(column_name, val)
+WHERE d.resolution = 'instant' AND d.ts > now() - interval '24 hours'
+GROUP BY kv.column_name
+UNION ALL
+SELECT 'station_readings', 'instant', kv.column_name,
+       count(*), count(*) FILTER (WHERE kv.val IS NULL),
+       round(100.0 * count(*) FILTER (WHERE kv.val IS NULL) / NULLIF(count(*), 0), 1)
+FROM station_readings s
+CROSS JOIN LATERAL (VALUES
+    ('pm25_conc', s.pm25_conc::double precision), ('aqius', s.aqius::double precision),
+    ('temp_out_c', s.temp_out_c::double precision), ('humidity_out', s.humidity_out::double precision),
+    ('pressure_hpa', s.pressure_hpa::double precision), ('wind_speed', s.wind_speed::double precision),
+    ('wind_dir', s.wind_dir::double precision), ('heat_index', s.heat_index::double precision)
+) AS kv(column_name, val)
+WHERE s.resolution = 'instant' AND s.ts > now() - interval '24 hours'
+GROUP BY kv.column_name;
 
 
 -- ---------------------------------------------------------------------
