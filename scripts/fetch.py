@@ -111,20 +111,21 @@ def main():
     # buckets? Below 6 is a correctness signal, not a liveness one — still write,
     # still ping. Persisted to pipeline_run_log so it can be trended in Grafana.
     cov = nz.coverage(device_rows, station_rows)
-    if cov["covered"] < cov["expected"]:
-        print(f"COVERAGE WARNING: {cov['covered']}/{cov['expected']} buckets "
-              f"(device={cov['device_res']} station={cov['station_res']})", file=sys.stderr)
+    if cov["missing"]:
+        print(f"COVERAGE WARNING: {cov['covered']}/{cov['expected']} buckets, "
+              f"missing {cov['missing']}", file=sys.stderr)
 
     with psycopg2.connect(SUPABASE_DB_URL) as conn:
         with conn.cursor() as cur:
             n1 = upsert(cur, "device_readings", nz.DEVICE_COLS, device_rows)
             n2 = upsert(cur, "station_readings", nz.STATION_COLS, station_rows)
+            # coverage_pct is a generated column — do not insert it (DB derives it).
             cur.execute(
-                "INSERT INTO pipeline_run_log (device_res, station_res, covered, "
-                "expected, coverage_pct, device_rows, station_rows, qc_violations) "
+                "INSERT INTO pipeline_run_log (device_res, station_res, missing, "
+                "covered, expected, device_rows, station_rows, qc_violations) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                (cov["device_res"], cov["station_res"], cov["covered"], cov["expected"],
-                 cov["pct"], n1, n2, len(findings)),
+                (cov["device_res"], cov["station_res"], cov["missing"], cov["covered"],
+                 cov["expected"], n1, n2, len(findings)),
             )
         conn.commit()
 

@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS device_readings (
     humidity_pct real,                              -- hm — INDOOR humidity (%)
     pressure_hpa real,                              -- pr/100 — pressure (hPa)
 
-    aqius        integer,                           -- overall US AQI (may differ from pm25_aqius when CO2/PM10 is dominant)
+    aqius        integer,                           -- overall US AQI = GREATEST(pm25_aqius, pm10_aqius); CO2 is measured but is NOT a US AQI pollutant (US AQI = O3/PM2.5/PM10/CO/SO2/NO2, and CO here means carbon monoxide, not CO2)
     aqicn        integer,                           -- overall China AQI
     mainus       text,                              -- dominant pollutant US, e.g. "pm25", "co2"
     maincn       text,                              -- dominant pollutant China
@@ -179,16 +179,29 @@ CREATE TABLE IF NOT EXISTS pipeline_run_log (
     run_at         timestamptz NOT NULL DEFAULT now(),
     device_res     text[],                            -- resolutions present this run
     station_res    text[],
-    covered        integer,                           -- expected buckets that got >=1 row
-    expected       integer,                           -- always 6
-    coverage_pct   real,                              -- covered / expected
-    device_rows    integer,                           -- rows upserted
-    station_rows   integer,
-    qc_violations  integer                            -- cross-field violations this run
+    missing        text[],                            -- expected buckets absent, e.g. {device:daily}
+    covered        integer NOT NULL,                  -- expected buckets that got >=1 row
+    expected       integer NOT NULL DEFAULT 6,        -- device{4} + station{2}
+    -- Ratio derived by the DB from covered/expected: single source of truth, so a
+    -- buggy caller can never insert a wrong percentage.
+    coverage_pct   numeric GENERATED ALWAYS AS (
+                       CASE WHEN expected = 0 THEN NULL ELSE covered::numeric / expected END
+                   ) STORED,
+    device_rows    integer NOT NULL,                  -- rows built & upserted (ON CONFLICT upserts every row sent)
+    station_rows   integer NOT NULL,
+    qc_violations  integer NOT NULL DEFAULT 0,        -- cross-field violations this run
+
+    -- Constraints protect this log (our own computed metadata) against buggy inserts.
+    -- NOTE: no such CHECK is placed on the sensor tables — bad vendor readings are
+    -- kept as evidence and flagged by the anomaly views (flag, not block).
+    CONSTRAINT chk_run_log_expected CHECK (expected = 6),
+    CONSTRAINT chk_run_log_covered  CHECK (covered BETWEEN 0 AND expected),
+    CONSTRAINT chk_run_log_counts   CHECK (device_rows >= 0 AND station_rows >= 0 AND qc_violations >= 0)
 );
 
 CREATE INDEX IF NOT EXISTS idx_run_log_run_at ON pipeline_run_log (run_at DESC);
 
--- Coverage KPI for Grafana (report ratio of full-coverage runs, not an average):
--- SELECT count(*) FILTER (WHERE coverage_pct = 1.0)::real / count(*) AS full_coverage_ratio
+-- Coverage KPI for Grafana (report the ratio of full-coverage runs, not an average;
+-- compare integers covered=expected, never the float coverage_pct):
+-- SELECT count(*) FILTER (WHERE covered = expected)::real / NULLIF(count(*), 0) AS full_coverage_ratio
 -- FROM pipeline_run_log WHERE run_at > now() - interval '7 days';

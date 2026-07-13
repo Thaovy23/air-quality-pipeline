@@ -185,19 +185,20 @@ def test_coverage_full_is_6_not_8():
     cov = nz.coverage(dev, stn)
     assert cov["expected"] == 6          # station has no daily/monthly
     assert cov["covered"] == 6
+    assert cov["missing"] == []
     assert cov["pct"] == 1.0
 
-def test_coverage_missing_resolution_flags_partial():
+def test_coverage_missing_resolution_names_the_gap():
     dev = _rows("instant", "hourly", "daily")   # monthly dropped by API
     stn = _rows("instant", "hourly")
     cov = nz.coverage(dev, stn)
     assert cov["covered"] == 5
     assert cov["pct"] < 1.0
-    assert "monthly" not in cov["device_res"]
+    assert cov["missing"] == ["device:monthly"]
 
 def test_coverage_missing_station_current():
     dev = _rows("instant", "hourly", "daily", "monthly")
     stn = _rows("hourly")                        # no station instant this run
     cov = nz.coverage(dev, stn)
     assert cov["covered"] == 5
-    assert cov["station_res"] == ["hourly"]
+    assert cov["missing"] == ["station:instant"]

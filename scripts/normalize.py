@@ -216,15 +216,19 @@ EXPECTED_STATION_RES = ("instant", "hourly")
 
 def coverage(device_rows, station_rows):
     """From the built row tuples (resolution is field 0), report how many of the
-    6 expected (endpoint, resolution) buckets got at least one row this run."""
+    6 expected (endpoint, resolution) buckets got at least one row this run, and
+    which are missing (e.g. 'device:daily') — the missing list makes an alert say
+    exactly what dropped instead of just a percentage."""
     dev_present = {r[0] for r in device_rows}
     stn_present = {r[0] for r in station_rows}
-    covered = (sum(res in dev_present for res in EXPECTED_DEVICE_RES)
-               + sum(res in stn_present for res in EXPECTED_STATION_RES))
+    missing = ([f"device:{res}" for res in EXPECTED_DEVICE_RES if res not in dev_present]
+               + [f"station:{res}" for res in EXPECTED_STATION_RES if res not in stn_present])
     expected = len(EXPECTED_DEVICE_RES) + len(EXPECTED_STATION_RES)
+    covered = expected - len(missing)
     return {
         "device_res": sorted(dev_present),
         "station_res": sorted(stn_present),
+        "missing": missing,
         "covered": covered,
         "expected": expected,
         "pct": round(covered / expected, 4),
