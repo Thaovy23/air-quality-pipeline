@@ -165,3 +165,30 @@ SELECT resolution, ts, temp_out_c, heat_index, aqius, pm25_aqius,
 FROM station_readings
 WHERE (heat_index IS NOT NULL AND temp_out_c IS NOT NULL AND heat_index < temp_out_c)
    OR (aqius IS NOT NULL AND pm25_aqius IS NOT NULL AND aqius <> pm25_aqius);
+
+
+-- ---------------------------------------------------------------------
+-- 6) pipeline_run_log — one row per fetch run (Coverage KPI + run summary)
+--    Answers what freshness/liveness cannot: "the pipeline ran, but did it
+--    write EVERYTHING it should have?" Expected coverage is 6 buckets:
+--    device {instant,hourly,daily,monthly} + station {instant,hourly}.
+--    A run with coverage_pct < 1.0 means the API dropped a resolution.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pipeline_run_log (
+    id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_at         timestamptz NOT NULL DEFAULT now(),
+    device_res     text[],                            -- resolutions present this run
+    station_res    text[],
+    covered        integer,                           -- expected buckets that got >=1 row
+    expected       integer,                           -- always 6
+    coverage_pct   real,                              -- covered / expected
+    device_rows    integer,                           -- rows upserted
+    station_rows   integer,
+    qc_violations  integer                            -- cross-field violations this run
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_log_run_at ON pipeline_run_log (run_at DESC);
+
+-- Coverage KPI for Grafana (report ratio of full-coverage runs, not an average):
+-- SELECT count(*) FILTER (WHERE coverage_pct = 1.0)::real / count(*) AS full_coverage_ratio
+-- FROM pipeline_run_log WHERE run_at > now() - interval '7 days';

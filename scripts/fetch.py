@@ -107,16 +107,32 @@ def main():
         print(f"QC WARNING [{endpoint}/{resolution} ts={ts_v}]: {'; '.join(reasons)}",
               file=sys.stderr)
 
+    # Coverage KPI: did the API deliver all 6 expected (endpoint, resolution)
+    # buckets? Below 6 is a correctness signal, not a liveness one — still write,
+    # still ping. Persisted to pipeline_run_log so it can be trended in Grafana.
+    cov = nz.coverage(device_rows, station_rows)
+    if cov["covered"] < cov["expected"]:
+        print(f"COVERAGE WARNING: {cov['covered']}/{cov['expected']} buckets "
+              f"(device={cov['device_res']} station={cov['station_res']})", file=sys.stderr)
+
     with psycopg2.connect(SUPABASE_DB_URL) as conn:
         with conn.cursor() as cur:
             n1 = upsert(cur, "device_readings", nz.DEVICE_COLS, device_rows)
             n2 = upsert(cur, "station_readings", nz.STATION_COLS, station_rows)
+            cur.execute(
+                "INSERT INTO pipeline_run_log (device_res, station_res, covered, "
+                "expected, coverage_pct, device_rows, station_rows, qc_violations) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (cov["device_res"], cov["station_res"], cov["covered"], cov["expected"],
+                 cov["pct"], n1, n2, len(findings)),
+            )
         conn.commit()
 
     cur_device = root.get("current") or {}
     ts = cur_device.get("ts", "?")
     print(f"OK ts={ts} | co2={cur_device.get('co2')} | pm25={nz._conc(cur_device.get('pm25'))} "
-          f"| device_rows={n1} station_rows={n2} | qc_violations={len(findings)}")
+          f"| device_rows={n1} station_rows={n2} | qc_violations={len(findings)} "
+          f"| coverage={cov['covered']}/{cov['expected']}")
     ping(HEALTHCHECKS_URL)
 
 

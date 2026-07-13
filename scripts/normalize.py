@@ -201,3 +201,31 @@ def scan_quality(root, validated):
         if reasons:
             findings.append(("station", resolution, r.get("ts"), reasons))
     return findings
+
+
+# ---------------------------------------------------------------------
+# Coverage KPI: did the API deliver every (endpoint, resolution) bucket we
+# expect this run? station has NO daily/monthly — the validated endpoint only
+# exposes current + hourly (verified by the schema CHECK constraint), so the
+# expected total is 6, not 8. A drop below 6 means the API silently stopped
+# returning a resolution — a correctness signal freshness/liveness can't catch.
+# ---------------------------------------------------------------------
+EXPECTED_DEVICE_RES = ("instant", "hourly", "daily", "monthly")
+EXPECTED_STATION_RES = ("instant", "hourly")
+
+
+def coverage(device_rows, station_rows):
+    """From the built row tuples (resolution is field 0), report how many of the
+    6 expected (endpoint, resolution) buckets got at least one row this run."""
+    dev_present = {r[0] for r in device_rows}
+    stn_present = {r[0] for r in station_rows}
+    covered = (sum(res in dev_present for res in EXPECTED_DEVICE_RES)
+               + sum(res in stn_present for res in EXPECTED_STATION_RES))
+    expected = len(EXPECTED_DEVICE_RES) + len(EXPECTED_STATION_RES)
+    return {
+        "device_res": sorted(dev_present),
+        "station_res": sorted(stn_present),
+        "covered": covered,
+        "expected": expected,
+        "pct": round(covered / expected, 4),
+    }

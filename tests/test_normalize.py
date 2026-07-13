@@ -172,3 +172,32 @@ def test_scan_quality_finds_planted_violation():
     endpoint, resolution, ts, reasons = findings[0]
     assert endpoint == "device" and ts == "t2"
     assert any("PM order" in r for r in reasons)
+
+
+# --- coverage KPI: expected is 6 (station has no daily/monthly) --------------
+def _rows(*resolutions):
+    """Build minimal tuples with resolution in field 0."""
+    return [(res, "ts") for res in resolutions]
+
+def test_coverage_full_is_6_not_8():
+    dev = _rows("instant", "hourly", "daily", "monthly")
+    stn = _rows("instant", "hourly")
+    cov = nz.coverage(dev, stn)
+    assert cov["expected"] == 6          # station has no daily/monthly
+    assert cov["covered"] == 6
+    assert cov["pct"] == 1.0
+
+def test_coverage_missing_resolution_flags_partial():
+    dev = _rows("instant", "hourly", "daily")   # monthly dropped by API
+    stn = _rows("instant", "hourly")
+    cov = nz.coverage(dev, stn)
+    assert cov["covered"] == 5
+    assert cov["pct"] < 1.0
+    assert "monthly" not in cov["device_res"]
+
+def test_coverage_missing_station_current():
+    dev = _rows("instant", "hourly", "daily", "monthly")
+    stn = _rows("hourly")                        # no station instant this run
+    cov = nz.coverage(dev, stn)
+    assert cov["covered"] == 5
+    assert cov["station_res"] == ["hourly"]
